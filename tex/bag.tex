@@ -1,0 +1,650 @@
+\section{A First Formalization: A Bag Specification}
+
+The first specification of the concurrent stack really only
+specifies the stack's behavior as a \emph{bag}. Nowhere in the
+specification is the order of insertion reflected. In a concurrent
+setting this is less damning than it might appear because from the
+perspective of a single thread it is indeed the case that there is
+little connection between the order in which things are inserted and
+when they will be removed. This is a direct result of the fact that a
+thread must be agnostic to the interference and actions of other
+threads operating on the same stack concurrently.
+
+With this in mind, the specification for the stack will be
+parameterized by some arbitrary predicate on values,
+$P : \Val \to \iProp$. Every element of the stack will satisfy $P$ and
+thus our specifications are roughly
+\begin{align*}
+  P(v) \wand &\wpre{\textlog{push}(v)}[\mathcal{E}]{\TRUE}\\
+  &\wpre{\textlog{pop}()\ \ \,}[\mathcal{E}]
+  {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+\end{align*}
+Of course the actual specifications must specify {\tt stack}, a
+function which returns a tuple a push and pop. This necessitates the
+use of a higher order specification, a weakest preconditions whose
+post condition contains other weakest preconditions. This is possible
+because Iris weakest preconditions are not encoded as a separate sort
+of logical proposition but rather as ordinary $\iProp$s. Furthermore,
+to make using the specification easier, a common trick with weakest
+preconditions is employed. Instead of directly stating something along
+the lines of $\wpre{e}[\mathcal{E}]{\Phi}$, instead we introduce a
+``cut'',
+$\All \Psi. (\All v. \Phi(v) \wand \Psi(v)) \wand \wpre{e}[\mathcal{E}]{\Psi}$. This
+makes chaining together multiple weakest preconditions considerably
+simpler and avoids gratuitous uses of the rule of consequence. With
+all of this said, the first specification for concurrent stacks is
+\begin{align*}
+  \forall \Phi.\qquad&\\
+  (\All f_1 f_2.&
+        \wpre{f_1()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+  \wand & \All v. P(v) \wand \wpre{f_2(v)}{\TRUE}\\
+  \wand & \Phi(f_1, f_2))\\
+  \wand \wpre{&\textlog{stack}()}{\Phi}
+\end{align*}
+Rather than directly verifying this specification, the proof depends
+on several helpful lemmas verifying the behavior of offers and
+mailboxes. By proving these simple sublemmas the verification of
+concurrent stacks can respect the abstraction boundaries constructed by
+isolating mailboxes as we have done.
+
+\subsection{Verifying Offers}
+
+The heart of verifying offers is accurately encoding the transition
+system described in the previous section. Roughly, an offer can
+transition from initial to accepted or from initial to revoked but no
+other transitions are to be allowed. Encoding this requires a simple
+but interesting application of ghost state. It is possible to encode
+an arbitrary state transition system in Iris but in this case a more
+specialized approach is simpler.
+
+Specifically, offers will be governed by a proposition
+$\textlog{stages}$ which encodes what state of the three an offer is
+in. Ghost state is needed to ensure that certain transitions are only
+possible for threads with \emph{ownership} of the offer. To do this,
+the exclusive monoid on unit will act as a token giving the owner the
+right to transition to the original state to the revoked state. The
+main thread will have access to $\ownGhost{\gamma}{\exinj(())}$ for
+some $\gamma$ and it will be necessary to use this resource to
+transition from the initial state to the revoked state. The
+proposition encoding the transition system is
+\[
+  \textlog{stages}_\gamma(v, \ell) \triangleq
+  (P(v) * \ell \mapsto 0) \mathrel{\vee}
+  \ell \mapsto 1 \mathrel{\vee}
+  (\ell \mapsto 2 * \ownGhost{\gamma}{\exinj(())})
+\]
+Having defined this, the proposition $\textlog{is\_offer}$ is now within
+reach.
+\[
+  \textlog{is\_offer}_\gamma(v) \triangleq
+  \Exists v', \ell. v = (v', \ell) *
+  \Exists \iota. \knowInv{\iota}{\textlog{stages}_\gamma(v', \ell)}
+\]
+Notice that $\textlog{is\_offer}$ is clearly persistent, reflecting
+the fact that it ought to be shared between multiple threads. This
+implies that knowing $\textlog{is\_offer}_\gamma(v)$ does not assert
+ownership of any kind, rather, it asserts that for an atomic step of
+computation the owner may assume that the offer is in one of the three
+states. This sharing provides the motivation for using invariants to
+capture $\textlog{stages}$. Without wrapping it in an invariant it
+would not be possible to share it between multiple threads. Notice
+that both of these propositions are parameterized by a ghost name,
+$\gamma$. Each $\gamma$ should uniquely correspond to an offer and
+represents the ownership the creator of an offer has over it, namely
+the right to revoke it. This is expressed in the specification of {\tt
+  mk\_offer}.
+\[
+  \All v. P(v) \wand
+  \wpre{\textlog{mk\_offer}(v)}{v.\ \Exists \gamma.
+    \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma(v)
+  }
+\]
+This reads as that calling {\tt mk\_offer} will allocate an offer
+\emph{as well as} returning $\ownGhost{\gamma}{\exinj(())}$ which
+represents the right to revoke an offer. This can be seen in the
+specification for {\tt revoke\_offer}.
+\[
+  \All \gamma, v. \textlog{is\_offer}_\gamma(v) * \ownGhost{\gamma}{\exinj(())}
+  \wand
+  \wpre{\textlog{revoke\_offer}(v)}{v.
+    \ v = \textlog{None} \mathrel{\vee}
+    \Exists v'. v = \textlog{Some}(v) * P(v')
+  }
+\]
+The specification for {\tt accept\_offer} is remarkably similar except
+that it does not require ownership of
+$\ownGhost{\gamma}{\exinj(())}$. This is because multiple threads may
+call {\tt accept\_offer} even though it will only successfully return
+once.
+\[
+  \All \gamma, v. \textlog{is\_offer}_\gamma(v)
+  \wand
+  \wpre{\textlog{accept\_offer}(v)}{v.
+    \ v = \textlog{None} \mathrel{\vee}
+    \Exists v'. v = \textlog{Some}(v) * P(v')
+  }
+\]
+As an illustrative example, we will go through the the derivation of
+the specification for $\textlog{mk\_offer}$ and leave the derivations
+of the other two specifications as an exercise to the reader.
+
+\begin{thm}
+  $\All v. P(v) \wand
+  \wpre{\textlog{mk\_offer}(v)}{v.\ \Exists \gamma.
+    \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma(v)
+  }$ holds.
+\end{thm}
+\begin{proof}
+  Let us assume that we have some $v \in \Val$ and further that $P(v)$
+  holds. We wish to show that
+  $\wpre{\textlog{mk\_offer}(v)}{v.\ \Exists \gamma.
+    \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma(v)
+  }$ holds. By applying the $\beta$ rule for functions, we must show
+  that
+  \[
+    \wpre{(v, \textlog{ref}(0))}{v.\ \Exists \gamma.
+      \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma(v)
+    }
+  \]
+  We then apply the rule for allocation, so we may assume that we have
+  some location $\ell$ and that $\ell \mapsto 0$. We now need to show
+  that
+  $\wpre{(v, \ell)}{v.\ \Exists \gamma. \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma(v)}$.
+  Now we merely need to show that
+  \[
+    (v, \ell) \in \Val \mathrel{\wedge}
+    \pvs[\mathcal{E}] \Exists \gamma. \ownGhost{\gamma}{\exinj(())} * \textlog{is\_offer}_\gamma((v, \ell))
+  \]
+  The left-hand side of this conjunction is trivial. For the
+  right-hand side, we note that since $\mval(\exinj(()))$ clearly
+  holds we have that
+  $\pvs[\mathcal{E}] \Exists \gamma. \ownGhost{\gamma}{\exinj(())}$
+  holds. Therefore, it suffices to show that
+  $\pvs[\mathcal{E}] \textlog{is\_offer}_\gamma((v, \ell))$ holds for
+  some $\gamma$. For this, we first note that
+  $\textlog{is\_offer}_\gamma((v, \ell))$ is of course equal to
+  $\Exists v', \ell'. (v, \ell) = (v', \ell') * \Exists
+  \iota. \knowInv{\iota}{\textlog{stages}_\gamma(v', \ell')}$
+  So we start by introducing the existential quantifier with $v$ and
+  $\ell$ giving us the goal
+  \[
+    \pvs[\mathcal{E}] (v, \ell) = (v, \ell) * \Exists \iota. \knowInv{\iota}{\textlog{stages}_\gamma(v, \ell)}
+  \]
+  The equality is obviously true so we merely need to show that
+  $\pvs[\mathcal{E}] \Exists \iota. \knowInv{\iota}{\textlog{stages}_\gamma(v, \ell)}$.
+  For this, we will use the invariant allocation rule, so we need to show
+  that $\later \textlog{stages}_\gamma(v, \ell)$ holds and we're
+  done. For this, we prove $\textlog{stages}_\gamma(v, \ell)$ for
+  which it suffices to show $P(v) * \ell \mapsto 0$ which we have in our
+  assumptions.
+\end{proof}
+
+\subsection{Verifying Mailboxes}
+
+Having verified that offers work as intended, the next step is to
+verify that the mailbox abstraction built on top of them also
+satisfies the intended specification. In order to properly specify
+mailboxes, it is necessary to use a similar trick to that of the
+specification of stacks. That is, a specification that involves higher
+order weakest preconditions and bakes in a cut.
+\begin{align}
+  \forall \Phi.\qquad& \label{prop:spec1:mailboxspec}\\
+  (\All f_1 f_2.&
+        (\All v. P(v) \wand \wpre{f_1(v)}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')})
+                  \nonumber\\
+  \wand & \wpre{f_2()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+          \nonumber\\
+  \wand & \Phi(f_1, f_2)) \nonumber\\
+  \wand \wpre{&\textlog{mailbox}()}{\Phi} \nonumber
+\end{align}
+In a small victory for compositional verification, the proof of this
+specification is made with no reference to the underlying
+implementation of offers, only to the specification previously
+proven. Throughout the proof an invariant is maintained governing the
+shared mutable cell that contains potential offers. This invariant
+enforces that when this cell is full, it contains an offer. It looks
+like this
+\[
+  \textlog{is\_mailbox}(v) \triangleq
+  \Exists \ell. v = \ell *
+  \ell \mapsto \textlog{None} \mathrel{\vee}
+  \Exists v' \gamma. l \mapsto \textlog{Some}(v') * \textlog{is\_offer}_\gamma(v')
+\]
+This captures the informal notion described above.
+\begin{thm}
+  Proposition~(\ref{prop:spec1:mailboxspec}) holds.
+\end{thm}
+\begin{proof}
+  For this, we start by applying the $\beta$-rule. This means that in
+  addition to our assumption that
+  \begin{align*}
+  \All f_1 f_2.&
+        (\All v. P(v) \wand \wpre{f_1(v)}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')})\\
+  \wand & \wpre{f_2()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+  \wand & \Phi(f_1, f_2)
+  \end{align*}
+  our goal is
+  \[
+    \wpre{\text{\tt let r = ref None in (..., ...)}}{\Phi}
+  \]
+  We then apply the rule for allocation, so we suppose that we have
+  some $\ell$ such that we also have $\ell \mapsto \textlog{None}$.
+  Our goal after applying another $\beta$ rule is then of the form
+  \[
+    \wpre{(..., ...)}{\Phi}
+  \]
+  We now need to show that $\pvs[\top] \Phi(..., ...)$ holds so we
+  take this time to allocate the mailbox invariant as discussed
+  above. We will allocate
+  $\knowInv{\iota}{\textlog{is\_mailbox}(\ell)}$, for some $\iota$,
+  so we must prove that $\later \textlog{is\_mailbox}(\ell)$ holds. We
+  first instantiate the existential quantifier with $\ell$ leaving us
+  with the goal
+  \[
+    \ell = \ell * \ell \mapsto \textlog{None} \mathrel{\vee}
+    \Exists v', \gamma. l \mapsto \textlog{Some}(v') * \textlog{is\_offer}_\gamma(v')
+  \]
+  Obviously the equality holds and the left side of the disjunct holds
+  by our assumption that $\ell \mapsto \textlog{None}$ so we're done.
+  We now apply our original hypothesis leaving us to prove
+  \begin{align*}
+    \All v. P(v) \wand &\wpre{f_1(v)}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+    &\wpre{f_2()\ \ }{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+  \end{align*}
+  where we have defined $f_1$ and $f_2$ as
+
+  \noindent\begin{minipage}[t]{0.5\linewidth}
+  \begin{lstlisting}
+    f1 = rec put v ->
+     let off = mk_offer v in
+     r := Some off;
+     revoke_offer off,
+  \end{lstlisting}
+  \end{minipage}\hfill
+  \begin{minipage}[t]{0.45\linewidth}
+  \begin{lstlisting}
+    f2 = rec get n ->
+     let offopt = !r in
+     match offopt with
+       None -> None
+     | Some x -> accept_offer x
+     end
+  \end{lstlisting}
+  \end{minipage}
+
+  We shall verify the specification for $f_1$ and leave the
+  specification of $f_2$ as an exercise. Let us assume that we have
+  $P(v)$ for some $v$. We then apply the specification for
+  {\tt mk\_offer} to conclude that we must show that
+  \begin{align*}
+    \textlog{is\_offer}_\gamma&(\textlog{off}) * \ownGhost{\gamma}{\exinj(())} \wand\\
+    &\wpre{(\text{\tt r := Some off; revoke\_offer off})}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+  \end{align*}
+  So let us assume that we know
+  $\textlog{is\_offer}_\gamma(\textlog{off})$ as well as
+  $\ownGhost{\gamma}{\exinj(())}$. We then open our invariant for the
+  single atomic reduction of {\tt r := Some off}. We must then show
+  the following
+  \begin{align*}
+    &\later \textlog{is\_mailbox}(r) \wand\\
+    &\ \  \wpre{(\text{\tt r := Some off})}{v. \textlog{is\_mailbox}(r) *
+    \wpre{\text{\tt (v; revoke\_offer off)}}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}}
+  \end{align*}
+  Notice that we have only $\later \textlog{is\_mailbox}(r)$ because
+  opening an invariant gives only $\later$ of the stored
+  proposition. This will suffice in our case because the rule for
+  loading a location does not require $\ell \mapsto v$, only
+  $\later \ell \mapsto v$ because $\ell \mapsto v$ is a timeless
+  proposition. Weakest preconditions are designed in such a way that
+  it is always possible to remove $\later$s from timeless
+  propositions.
+
+  Let us then assume that we have $\later \textlog{is\_mailbox}(r)$.
+  We know then that there is a location $\ell'$ so that $r = \ell'$
+  and $\later \ell \mapsto \textlog{None} \mathrel{\vee}
+  \Exists v' \gamma. \later (l \mapsto \textlog{Some}(v') * \textlog{is\_offer}_\gamma(v'))$.
+  We then case analyze this disjunction.
+
+  In the first case, we have $\ell' \mapsto \textlog{None}$ so we can
+  apply the rule for stores leaving us with the goal
+  \begin{align*}
+    \ell' \mapsto& \textlog{Some}(\textlog{off}) \wand\\
+    &\textlog{is\_mailbox}(\ell') * \wpre{\text{\tt (v; revoke\_offer off)}}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+  \end{align*}
+  First, we prove $\textlog{is\_mailbox}(\ell')$ with our assumptions
+  that $\ell' \mapsto \textlog{Some}(\textlog{off})$ and
+  $\textlog{is\_offer}_\gamma(\textlog{off})$. This is quite
+  straightforward. We prove this existential for $\ell'$. For this we
+  must show that
+  \[
+    \ell = \ell' * \ell \mapsto \textlog{None} \mathrel{\vee}
+    \Exists v' \gamma. l \mapsto \textlog{Some}(v') * \textlog{is\_offer}_\gamma(v')
+  \]
+  but the right disjunct is precisely the assumptions we have. We then
+  must show the rest of the goal
+  \[
+    \wpre{\text{\tt ((); revoke\_offer off)}} {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+  \]
+  For this we apply the $\beta$ and notice that
+  $\wpre{\text{\tt revoke\_offer(off)}} {v. v = \textlog{None}
+    \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}$
+  is precisely the specification we proved earlier for {\tt
+    revoke\_offer} and we conveniently have
+  $\ownGhost{\gamma}{\exinj(())}$ and $\textlog{is\_offer}(\textlog{off})$
+  (remember that it's persistent) so we're done.
+
+  The reasoning for the other disjunct is identical so we elide it
+  here.
+\end{proof}
+
+\subsection{Verifying Stacks}
+
+We now turn to the verification of stacks themselves. The
+specification for these has already been discussed:
+\begin{align}
+  \forall \Phi.\qquad& \label{prop:spec1:stack}\\
+  (\All f_1 f_2.&
+        \wpre{f_1()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v) * P(v)} \nonumber\\
+  \wand & \All v. P(v) \wand \wpre{f_2(v)}{\TRUE} \nonumber\\
+  \wand & \Phi(f_1, f_2)) \nonumber\\
+  \wand \wpre{&\textlog{stack}()}{\Phi} \nonumber
+\end{align}
+Having verified mailboxes already only a small amount of additional
+preparation is needed before actually verifying this
+proposition. Specifically, an invariant representing that a memory
+cell contains a stack is needed. This is necessary because this cell
+will be shared between multiple threads concurrently reading and
+writing to it and without an invariant there is no way to reason about
+this. The predicate $\textlog{is\_stack}(v)$ used to form the
+invariant is defined as follows by guarded recursion
+\[
+  \textlog{is\_stack}(v) \triangleq
+  \MU R. v = \textlog{None} \mathrel{\vee} \Exists h, t. v = \textlog{Some}(h, t) * P(h) * \later R(t)
+\]
+Having defined this, it is straightforward to define an invariant
+enforcing that a location points to a stack.
+\[
+  \textlog{stack\_inv}(v) \triangleq
+  \Exists \ell, v'. v = \ell * \ell \mapsto v' * \textlog{is\_stack}(v')
+\]
+We turn now to verifying the proposition.
+\begin{thm}
+  Proposition~(\ref{prop:spec1:stack}) holds.
+\end{thm}
+\begin{proof}
+  For this, we assume first that we have
+  \begin{align*}
+    \All f_1 f_2.&
+        \wpre{f_1()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v) * P(v)}\\
+    \wand & \All v. P(v) \wand \wpre{f_2(v)}{\TRUE}\\
+    \wand & \Phi(f_1, f_2))\\
+  \end{align*}
+  Now we apply the $\beta$ rule to conclude that we must show that
+  \[
+    \wpre{(\text{\tt let mailbox = mailbox () in E})}{\Phi}
+  \]
+  We can then apply the bind rule to see that it suffices to prove
+  instead
+  \[
+    \wpre{\mathtt{mailbox()}}{v. \wpre{\text{\tt let mailbox = v in E}}{\Phi}}
+  \]
+  This is in the form that we can apply our specification for {\tt
+    mailbox}. Our goal is now to show that
+  \begin{align*}
+    \All f_1 f_2.&
+    \All v. P(v) \wand \wpre{f_1(v)}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+    \wand & \wpre{f_2()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+    \wand & \wpre{\text{\tt let mailbox = (f1, f2) in E}}{\Phi}
+  \end{align*}
+  This is the advantage provided by specifying our lemmas with a cut
+  built in. The mailbox lemma is immediately applicable without
+  further manipulation. Let us assume that we have such an $f_1$ and
+  $f_2$ and furthermore that the above two specifications holds for
+  $f_1$ and $f_2$. We now attempt to prove that
+  $\wpre{\text{\tt let mailbox = (f1, f2) in E}}{\Phi}$.  We next
+  apply the $\beta$ rule for {\tt let} to transform our goal into
+  \[
+    \wpre{\text{\tt let get = f1 in let put = f2 in let r = ref None in (P1, P2)}}{\Phi}
+  \]
+  Now again we can apply our $\beta$ rules to conclude that we need to
+  show that the following holds
+  \[
+    \wpre{\text{\tt let r = ref None in ([f1/get]P1, [f2/put]P2)}}{\Phi}
+  \]
+  We now apply the allocation rule, so suppose that we have some
+  $\ell$, we must then show that if $\ell \mapsto \textlog{None}$ then
+  $\wpre{\text{\tt ([f1/get]P1, [f2/put]P2)}}{\Phi}$ holds. Before
+  attempting to prove this though, we allocate then invariant
+  $\textlog{stack\_inv}(\ell)$. This is easy to do because allocating
+  this invariant requires showing that
+  \[
+    \later \Exists \ell', v'. \ell = \ell' * \ell' \mapsto v' * \textlog{is\_stack}(v')
+  \]
+  Let us prove this by proving that
+  $\Exists \ell' v'. \ell = \ell' * \ell' \mapsto v' *
+  \textlog{is\_stack}(v')$ directly and instantiating the existential
+  with $\ell$ and $\textlog{None}$. Our remaining obligation is just
+  to show that
+  \[
+    \MU R. v = \textlog{None} \mathrel{\vee} \Exists h, t. v = \textlog{Some}(h, t) * P(h) * \later R(t)
+  \]
+  But the left disjunct is just reflexivity. We may then assume
+  $\knowInv{\iota}{\textlog{is\_stack}(r)}$. Now our goal is simply
+  of the form
+  \[
+    \wpre{\text{\tt ([f1/get]P1, [f2/put]P2)}}{\Phi}
+  \]
+  We, however, have an assumption that
+  \begin{align*}
+    \All f_1 f_2.&
+    \wpre{f_1()}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}\\
+    \wand & \All v. P(v) \wand \wpre{f_2(v)}{\TRUE}\\
+    \wand & \Phi(f_1, f_2))
+  \end{align*}
+  Now we apply this to our current goal leaving us to show that
+  \[
+    \wpre{\text{\tt [f1/get]P1()}}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \qquad
+    \All v. P(v) \wand \wpre{\text{\tt [f1/get]P2(v)}}{\TRUE}
+  \]
+  We will prove both of these separately now.
+  \begin{enumerate}
+  \item $\wpre{\text{\tt [f1/get]P1()}}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}$\\
+    First, let us apply L\"ob induction to get the assumption
+    \[
+      \later \wpre{\text{\tt [f1/get]P1()}}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    We will make use of this assumption in the case where we are
+    forced to loop due to contention on the main stack. We next apply
+    the bind rule to change our goal to
+    \[
+      \wpre{\text{\tt f1 ()}}
+      {v. \wpre{(\text{\tt match v with ...})}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}}
+    \]
+    We can now apply the assumption that we have for $f_1$, namely we
+    now must prove the entailment.
+    \[
+      \All v. (v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')) \wand
+      \wpre{(\text{\tt match v with ...})}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    Let us assume that we have some $v$ and that
+    $v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')$ holds.
+    We now case on this disjunction.
+
+    Let us first consider the case where
+    $\Exists v'. v = \textlog{Some}(v') * P(v')$ holds. We now need to
+    show can then destruct this existential telling us that there is
+    some $v'$ so that $v = \textlog{Some}(v')$ and $P(v')$
+    holds. Rewriting by $v = \textlog{Some}(v')$ we can then apply the
+    $\beta$ rule for matches to transform our goal into
+    \[
+      \wpre{(\text{\tt Some(v')})}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    However since this is a value it suffices to prove that
+    \[
+      \Exists v''. \textlog{Some}(v'') = \textlog{Some}(v') * P(v'')
+    \]
+    however our assumptions give this immediately.
+
+    Now consider the case where $v = \textlog{None}$. In this case we
+    can rewrite again by this equality and apply the $\beta$ rule for
+    match to conclude our goal is
+    \[
+      \wpre{(\text{\tt
+          match !r with
+            None -> ...
+          | Some hd -> ... end})}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    We now again apply our binding rule to rewrite our conclusion to
+    the form
+    \[
+      \wpre{(\text{\tt !r})}{v.
+       \wpre{\text{\tt match v with ...}}
+       {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+      }
+    \]
+    Now that we have an atomic operation, we can apply our invariant
+    rule to open the invariant that we have about $r$. Let us assume
+    that we have $\later \textlog{stack\_inv}(r)$. We can then rewrite
+    this to
+    \[
+      \Exists \ell, v'. \later (v = \ell * \ell \mapsto v' * \textlog{is\_stack}(v'))
+    \]
+    which is of course equivalent to
+    \[
+      \Exists \ell, v'. \later v = \ell * \later \ell \mapsto v' * \later \textlog{is\_stack}(v')
+    \]
+    For this, we then conclude that there exists some $v'$ and $\ell$
+    so that these conditions hold. We then can step our goal to
+    \[
+      \wpre{(\text{\tt v'})}{v.
+       \wpre{\text{\tt match v with ...}}
+       {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+      }
+    \]
+    and remove the $\later$s from our assumptions so that we have
+    $v = \ell * \later \ell \mapsto v' * \textlog{is\_stack}(v')$.
+    Next we unfold $\textlog{is\_stack}(v')$ to conclude that either
+    $v' = \textlog{None}$ or there is a $h, t$ so that
+    $v = \textlog{Some}(h, t)$ where $P(h)$ and
+    $\later \textlog{is\_stack}(t)$ holds.
+
+    In the first case, we rewrite our goal to
+    \[
+      \wpre{(\text{\tt None})}{v.
+       \wpre{\text{\tt match v with ...}}
+       {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+      }
+    \]
+    Finally, we can easily reestablish our invariant as required since
+    we have not consumed any resources, that is, we can prove
+    $\later \textlog{stack\_inv}(r)$ using our assumptions that
+    $v' = \textlog{None}$ with $r = \ell$ and $\ell \mapsto v'$.
+    Finally we now apply the $\beta$ rule for match transforming our
+    goal into
+    \[
+      \wpre{\mathtt{None}}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    which is immediately established because
+    $\textlog{None} = \textlog{None}$ obviously holds.
+
+    Let us consider the second case. We again rewrite by this equality
+    and reestablish our invariant. We can reestablish our invariant
+    because, again, we have just destructed it without consuming any
+    of the resources it provided. Our goal is then
+    \[
+      \wpre{\text{\tt match Some(h, t) with ...}}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    Notice that because we packed up all of our knowledge of $h, t$
+    back into our invariant, we have no information currently recorded
+    about $h$ or $t$. Next we apply the $\beta$ rule for match as well
+    as a few simple $\beta$ reductions for projections to get
+    \[
+      \wpre{\text{\tt if cas r (Some v') t then Some h else pop n}}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    We then again apply our bind rule to change our goal to
+    \[
+      \wpre{\text{\tt cas r (Some v') t}}{
+        v. \wpre{(\text{\tt ...})}
+        {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+      }
+    \]
+    We again open our invariant
+    $\knowInv{\iota}{\textlog{stack\_inv}(r)}$. This gives us that
+    $\later \textlog{stack\_inv}(r)$. Unfolding all of this, we get
+    that there is some $\ell'$ and some $v''$
+    \[
+      r = \ell' * \later \ell' \mapsto v'' * \later \textlog{is\_stack}(v'')
+    \]
+    Let us then case on whether or not $v' = v''$.
+
+    In the first case we can successfully compute our CAS so our goal
+    is
+    \[
+      \wpre{(\text{\tt if true then ... else ...})}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    where now $r = \ell'$ and $\ell' \mapsto t$. Since we have taken a
+    step, we may strip the $\later$s off of our assumption. We now
+    turn to reestablishing our invariant which is nontrivial since we
+    have changed what $r$ points to. We must show that
+    \[
+      \later \Exists \ell, v. r = \ell * \ell \mapsto v * \later \textlog{is\_stack}(v)
+    \]
+    For this, we instantiate it with $\ell = \ell'$ and $v = t$. We
+    then have the first two goals by assumption so we merely need to
+    show that $\later \textlog{is\_stack}(t)$ holds. For this, we
+    unfold our assumption that $\textlog{is\_stack}(v'')$ holds. Since
+    $v'' = \textlog{Some}(h, t)$ we must have that
+    \[
+      \Exists h', t'. v'' = (h', t') * P(h') * \later \textlog{is\_stack}(t')
+    \]
+    Unfolding this, we use injectivity to conclude that $h' = h$ and
+    $t' = t$ so we have $P(h') * \later \textlog{is\_stack}(t')$. The
+    latter gives us immediately what we need to reestablish the
+    invariant. We also hold on to the assumption that $P(h)$ holds and
+    return to our goal that
+    \[
+      \wpre{(\text{\tt if true then Some(h) else pop(n)})}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    so we step this to conclude that we must show
+    \[
+      \textlog{Some}(h) = \textlog{None} \mathrel{\vee} \Exists v'. \textlog{Some}(h) = \textlog{Some}(v') * P(v')
+    \]
+    however the right disjunct of this holds by assumption so we're
+    done with this case.
+
+    Finally, we consider the case that $v' \neq v''$. In this case our
+    CAS fails so we can step our goal to
+    \[
+      \wpre{(\text{\tt if false then Some(h) else pop(n)})}
+      {v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    it is trivial to reestablish our invariant since we know that
+    $\textlog{stack\_inv}(v'')$ still holds as we have not consumed
+    any of the resources. Finally we apply the $\beta$ rule for if to
+    turn out goal into
+    \[
+      \wpre{(\text{\tt pop(n)})}{v. v = \textlog{None} \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * P(v')}
+    \]
+    but now we apply our IH that we created earlier using L\"ob
+    induction and we're done.
+  \item $\All v. P(v) \wand \wpre{\text{\tt [f1/get]P2(v)}}{\TRUE}$\\
+    This is left as an exercise to the reader as it is strictly
+    simpler than the above proof.
+  \end{enumerate}
+\end{proof}
+
+The Coq formalization of all of this can be found in {\tt
+  concurrent\_stack2.v}.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:

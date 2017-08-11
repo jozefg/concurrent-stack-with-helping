@@ -1,0 +1,36 @@
+\section{Conclusion}
+
+In this case study we have examined several different incarnations of
+formalizations of concurrent stacks in Iris. This provides evidence
+for Iris being an expressive and flexible program logic. Several of
+Iris's features were necessary to even express the desired
+specifications.
+\begin{itemize}
+\item Impredicative invariants were needed in order to have the
+  invariant contain $P$, the arbitrary predicate all the
+  specifications where parameterized by.
+\item Higher-order specifications in order to describe the
+  \emph{closure-returning} pattern that mailboxes and stacks made use
+  of.
+\item View-shifts in order to express linearization points.
+\end{itemize}
+Furthermore, the encoding of state transition systems as a simple
+proposition using ghost state demonstrates how simple CMRAs are
+sufficient to encode complex logical structures for expressing the
+structure of our program.
+
+All of these specifications where heavily inspired
+by~\citet{Clausen:2017} which provided a similar verification of
+hash-tables in Iris. Future work in this direction would be to mimic
+this work and drive towards more compositional verification of
+concurrent stacks. Ideally, the proof could be decomposed in the same
+that the proof of the bag specification is: respecting abstraction
+boundaries of APIs and relying purely on the specifications. More
+generally, there is still a great deal of engineering as well as
+theoretical to work in specifying sophisticated data-structures in a
+useful but still provable way.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:

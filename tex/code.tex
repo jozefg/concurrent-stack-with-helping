@@ -1,0 +1,181 @@
+\section{A Concurrent Stack with Helping}
+
+The abstract data type that we're implementing is that of a
+stack. Therefore, it will have two operations, {\tt push} and
+{\tt pop}. The main complication of our data structure is that {\tt
+  push} and {\tt pop} must be thread-safe.
+
+In order to handle this in the implementation, we will make use of the
+fact that we have an atomic compare-and-swap operation on
+reference cells in our language. By storing our stack in such a cell,
+we can retrieve it, modify it as necessary, and attempt to atomically
+replace the old stack with our new stack. As is usual with
+fine-grained concurrency, it is entirely possible that halfway
+through our operation another thread might modify the stack. In this
+case, the attempt to replace the old stack with the new stack using a
+CAS instruction will fail. The typical way to handle this is to loop
+and attempt the operation from the beginning, though in high
+contention situations this can be a major delay and cause long running
+operations to live-lock.
+
+In order to partially mitigate this, it would be ideal if some of our
+concurrent operations could avoid dealing with the main cell holding
+the stack entirely. For example, if one thread is attempting a push at
+the same time another is attempting a pop, they will fight each other
+for ownership of the cell even though it would be perfectly valid for
+one thread to simply hand the other the value. In a high contention
+situation with many threads pushing and popping at once, this can be
+quite a common problem. We handle this by introducing a
+\emph{side-channel} for threads to communicate along. That is, before
+a thread attempts to work with the main stack it will, for instance,
+check whether or not someone is offering a value along the
+side-channel that it could just take instead. Similarly a thread which
+is pushing a value onto the stack will offer its value on the
+side-channel temporarily in an attempt to avoid having to compete for
+the main stack. This scheme reduces contention on the main atomic cell
+and thus improves performance.
+
+\subsection{Mailboxes for Offers}
+In order to do this, before designing a stack we first implement a
+small API for side-channels. A side-channel has the following
+operations
+\begin{enumerate}
+\item An offer can be \emph{created} with an initial value.
+\item An offer can be accepted, marking the offer as taken and
+  returning the underlying value.
+\item Once created, an offer can be revoked which will prevent anyone
+  from accepting the offer and return the underlying value to the
+  thread.
+\end{enumerate}
+Of course, all of these operations have to be thread-safe! That is, it
+must be safe for an offer to be attempted to be accepted by multiple
+threads at once, an offer needs to be able to be revoked while it's
+being accepted, and so on. We choose to represent an offer as a tuple
+of the actual value the offer contains and a reference to an int. The
+underlying integer may take one of 3 values, either $0$, $1$ or
+$2$. Therefore, an offer of the form $(v, \ell)$ with $\ell \mapsto 0$
+is the initial state of an offer, no one has attempted to take it nor
+has it been revoked. Someone may attempt to take the offer in which
+case they will use a CAS to switch $\ell$ from $0$ to $1$, leading to
+the accepted state of an offer which is $(v, \ell)$ so that
+$\ell \mapsto 1$.  Revoking is almost identical but instead of
+switching from $0$ to $1$ instead we switch to $2$. Since both
+revoking and accepting an offer demand the offer to be in the initial
+state it is impossible anything other than exactly one accept or one
+revoke to succeed. The actual code for this is in
+Figure~\ref{fig:code:offer} and the transition graph sketched above is
+illustrated in Figure~\ref{fig:code:offertransgraph}.
+\begin{figure}
+\begin{lstlisting}
+  mk_offer = fun v -> (v, ref 0)
+  revoke_offer =
+    fun v ->
+      if cas (snd v) 0 2
+      then Some (fst v)
+      else None
+  accept_offer =
+    fun v ->
+      if cas (snd v) 0 1
+      then Some (fst v)
+      else None
+\end{lstlisting}
+\caption{The implementation of offers used to construct side-channels.}
+\label{fig:code:offer}
+\end{figure}
+\begin{figure}
+  \begin{tikzpicture}[->,>=stealth',shorten >=1pt,auto,node distance=4cm,
+    thick,main node/.style={circle,draw,font=\sffamily\Large\bfseries}]
+
+    \node[main node] (1) at (0, 0)    {(-, 0)};
+    \node[main node] (2) at (4,  1.0) {(-, 1)};
+    \node[main node] (3) at (4, -1.0) {(-, 2)};
+    \path[every node/.style={font=\sffamily\small}]
+    (1) edge[bend left]  node[pos=0.8, text depth=0.4cm,  left] {accept} (2)
+        edge[bend right] node[pos=0.8, text depth=-0.4cm, left] {revoke} (3);
+  \end{tikzpicture}
+  \caption{The states an offer may be in.}
+  \label{fig:code:offertransgraph}
+\end{figure}
+The pattern of offering something, immediately revoking it, and
+returning the value if the revoke was successful is sufficiently
+common that we can encapsulate it in an abstraction called a
+\emph{mailbox}. The idea is that a mailbox is built around an
+underlying cell containing an offer and that it provides two functions
+which, respectively, briefly put a new offer out and check for such an
+offer. The code for this may be found in
+Figure~\ref{fig:code:mailbox}. One small technical detail is that we
+have designed this as a constructor which returns two closures which
+manipulate the same reference cell. This simplifies the process of
+using a mailbox for stacks where we only have one mailbox at a
+time. It is not, however, fundamentally different than an
+implementation more in the style of the offers above.
+\begin{figure}
+\begin{lstlisting}
+  mailbox = fun () ->
+    let r = ref None in
+    (rec put v ->
+       let off = mk_offer v in
+       r := Some off;
+       revoke_offer off,
+     rec get n ->
+       let offopt = !r in
+       match offopt with
+         None -> None
+       | Some x -> accept_offer x
+       end)
+\end{lstlisting}
+\caption{The implementation of mailboxes which provide a convenient
+  wrapper over offers.}
+\label{fig:code:mailbox}
+\end{figure}
+\subsection{The Implementation of the Stack}
+With an implementation of offers, it is easy to code up the concurrent
+stack. The idea for implementing a side-channel is to have a
+designated cell for threads to put pending offers in. This way, when a
+thread comes along to push a value onto the stack it will first create
+an offer using the above API and put it into the given cell. It will
+then immediately revoke it to see if another thread has accepted the
+offer in the meantime and if none has, it will proceed with the
+pushing algorithm. The dual process suffices for a thread seeking to
+pop. The code for the stack is in Figure~\ref{fig:code:stack}. Notice
+that this too is written in a similar style to that of mailboxes, a
+make function which returns two closures for the operations rather
+than having them separately accept a stack as an argument.
+\begin{figure}
+\begin{lstlisting}
+  stack = fun () ->
+    let mailbox = mailbox () in
+    let put = fst mailbox in
+    let get = snd mailbox in
+    let r = ref None in
+    (rec pop n ->
+       match get () with
+         None ->
+         (match !r with
+            None -> None
+          | Some hd =>
+            if cas r (Some hd) (snd hd)
+            then Some (fst hd)
+            else pop n
+          end)
+       | Some x -> Some x
+       end,
+      rec push n ->
+        match put n with
+          None -> ()
+        | Some n ->
+          let r' = !r in
+          let r'' = Some (n, r') in
+          if cas r r' r''
+          then ()
+          else push n
+        end)
+\end{lstlisting}
+\caption{The implementation of the concurrent stack.}
+\label{fig:code:stack}
+\end{figure}
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:

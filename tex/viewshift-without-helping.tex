@@ -1,0 +1,281 @@
+\section{A Second Formalization: View-Shifts without Helping}
+
+The specification proven above has a major defect, it doesn't express
+any sort of ordering on the underlying collection of
+objects. Informally, it is quite clear that something popped out of
+the stack must have been pushed in at some point. This can be argued
+by a parametricity-type argument about $P$. Nothing stops us, however,
+from ascribing this specification to a concurrent queue or even
+something that permutes its elements randomly!
+
+In a concurrent setting this may seem like the best possible
+specification though. After all, suppose we have the following code.
+\begin{lstlisting}
+   push(1);
+   push(2);
+   let x = pop () in
+   let y = pop () in
+   (x, y)
+\end{lstlisting}
+It is perfectly possible for this code to evaluate to either $(1, 2)$
+or $(2, 1)$ or even $(6, 7)$. This is because another thread could
+come along between the time when the {\tt push}s have been executed,
+perform an arbitrary combination of {\tt push}s and {\tt pop}s on the
+stack before the original thread can execute its two {\tt pop}s. There
+is a far more serious flaw in the specification though: it is
+satisfied by operations which always return {\tt None} and discard the
+input!
+
+What is needed is a specification that reflects the fact that there is
+an underlying stack that may be accessed atomically and the behavior
+of the function is determined by the state of this stack at some
+particular point. This is related to the standard concurrency idea of
+\emph{linearization} where a complicated operation can be reduced to a
+single atomic interaction. This means that several complex,
+overlapping concurrent operations on a data structure can be logically
+linearly ordered.
+
+To begin experimenting with this new form of specification, we will
+start by verifying a concurrent stack without helping. This simplifies
+the verification considerably. Since, furthermore, helping is an
+invisible optimization any good specification for a stack with helping
+is an equally good specification for a stack without helping.
+
+In order to do define the specification we shift from parameterizing
+our specifications from properties of elements to properties of the
+abstract stack that our data structure represents. This abstract stack
+can be represented with a simple list at the level of the logic. It
+will then be assumed that Iris is supplemented with lists of values, a
+basic elimination operation on them (called $\textlog{foldr}$), and
+the basic rules of equality for it.
+
+Turning now to the question of what specifications ought to be
+concretely, they will have to make use of \emph{view-shifts}. This is
+a feature of the Iris base logic which generalizes simple implication,
+$\wand$, to allow for the updating of ghost state and the usage of
+invariants. These view-shifts are useful in defining the specification
+because these precisely capture the idea of a linearization point. If
+we supply an operation with a viewshift
+$\All L. P(L) \vsW[\mathcal{E}] P(L) * Q$ and that operation is
+equipped with the specification
+\[
+  \knowInv{\iota}{P(L)} \wand \wpre{...}{Q}
+\]
+then at some point in the code, for an atomic operation the invariant
+$\iota$ will be opened and the view-shift will be used. This must
+happen because it is the only way to produce a $Q$ to complete this
+specification. This view-shift then isolates the reasoning that will be
+done during that atomic step using the proposition held by the
+invariant. Furthermore, affinity means that such reasoning can only be
+applied once. This interaction with the proposition isolated by the
+invariant is precisely a linearization point; it's the only time which
+we manipulate the shared state guarded by the invariant. These
+specifications provide a much more flexible way of interacting with
+concurrent functions because they, in effect, capture any
+specification which contains the same critical element of
+\begin{enumerate}
+\item A single abstract property of the stack represented by the
+  data-structure.
+\item The post conditions are implied (with the possible manipulation
+  of ghost state) by the state of abstract data structure at the
+  moment it is accessed.
+\end{enumerate}
+
+The specification for a push operation might look like this
+\[
+  \All v.
+  (\All vs. P(vs) \vsW[\top \setminus \iota] Q * P(v :: vs)) \wand
+  \wpre{\text{\tt push(v)}}{v. Q}
+\]
+The $\setminus \iota$ can be safely ignored for now. In other words,
+if given a means of atomically switching from $P(vs)$ to
+$Q * P(v :: vs)$ we can produce a $Q$ in our post condition. If we
+want to specialize this to what we had earlier, then $Q = \TRUE$ and
+$P(L) = \All x \in L. P(x)$ gives us the specification we used to have
+for {\tt push}. The real advantage of this style of specification is
+that we can express a lot more than this though. For an example of how
+this might be done, see~\citet{Svendsen:2013} which uses these
+specification to automatically derive precise \emph{sequential}
+specifications from the concurrent ones without undue effort! It is of
+course a balance to create an expressive and yet general specification
+but the fact that this specification can encapsulate both the
+sequential case as well as the highly concurrent bag-like
+specification is evidence for its utility.
+
+Turning now to the question of specifying the invariants and
+predicates we need to make these specification work, we will need a
+new definition of $\textlog{is\_stack}$ and
+$\textlog{stack\_inv}$. The idea is that the stack invariant will
+contain that there is some stack in a mutable cell representing an
+abstract stack $vs$ so that $P(vs)$ holds. That is,
+\begin{align*}
+  \textlog{is\_stack}([], v) &\triangleq v = \textlog{None}\\
+  \textlog{is\_stack}(x :: L, v) &\triangleq v =
+  \Exists t. v = \textlog{Some}(x, t) * \textlog{is\_stack}(L, t)\\
+  \textlog{stack\_inv}(v) &\triangleq
+  \Exists \ell, v', L. v = \ell * \ell \mapsto v' * P(L) * \textlog{is\_stack}(L, v')
+\end{align*}
+Here we have parameterized our construction by the property we
+maintain about the abstract stack, $P$. Let us further assume that we
+have some arbitrary $Q$, $Q_1$, and $Q_2$ which will parameterize our
+specification. They are specified up front simply to avoid the tedium
+of writing quantifiers for them over and over again but no
+restrictions need to be imposed on them. By varying $P$, along with
+$Q$, $Q_1$ and $Q_2$ it is possible to recover our original
+specification as a concurrent bag amongst others.
+
+Therefore, the specification implies that we take the $P(L)$ contained
+in the invariant and atomically update it to $P(x :: L)$ before
+rebundling the whole thing back into the $\textlog{stack\_inv}$. The
+full specification for the stack data structure again makes use of the
+``cut'' trick seen earlier.
+\begin{align}
+  \forall \Phi.\qquad& \label{prop:vsnohelp:spec}\\
+  (\All f_1 f_2.& \nonumber\\
+        (&(\All vs. P(v :: vs) \vsW[\top \setminus \iota] Q_1(v) * P(vs)) \wand \nonumber\\
+         &(\All vs. P([]) \vsW[\top \setminus \iota] Q_2 * P([])) \wand\nonumber\\
+         &\wpre{f_1()}{v. v = \textlog{None} * Q_2 \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * Q_1(v')}\nonumber\\
+  \wand \quad (&\All v. (\All vs. P(vs) \vsW[\top \setminus \iota] Q * P(v :: vs)) \wand \wpre{f_2(v)}{v. Q}) \nonumber\\
+  \wand \quad \phantom{(}& \Phi(f_1, f_2))\nonumber\\
+  \wand P([&]) \nonumber\\
+  \wand \wpre{&\textlog{stack}()}{\Phi}\nonumber
+\end{align}
+The code that will be verified is slightly modified from the previous
+version. It is shown in Figure~\ref{fig:vsnohelp:code}
+\begin{figure}
+  \begin{lstlisting}
+  stack = fun () ->
+    let r = ref None in
+    (rec pop n ->
+       match !r with
+          None -> None
+        | Some hd =>
+          if cas r (Some hd) (snd hd)
+          then Some (fst hd)
+          else pop n
+        end,
+      rec push n ->
+        let r' = !r in
+        let r'' = Some (n, r') in
+        if cas r r' r''
+        then ()
+        else push n)
+  \end{lstlisting}
+  \caption{Concurrent stack \emph{without} helping.}
+  \label{fig:vsnohelp:code}
+\end{figure}
+
+\begin{thm}
+  Proposition~(\ref{prop:vsnohelp:spec}) holds.
+\end{thm}
+\begin{proof}
+  As before, we start by stepping our program, leaving us with the
+  goal
+  \[
+    \wpre{\text{\tt let r = ref None in ...}}{\Phi}
+  \]
+  with the assumption
+  \begin{align*}
+    \All f_1 f_2.& \\
+    (&(\All vs. P(v :: vs) \vsW[\top \setminus \iota] Q_1(v) * P(vs)) \wand \\
+     &(\All vs. P([]) \vsW[\top \setminus \iota] Q_2 * P([])) \wand\\
+     &\wpre{f_1()}{v. v = \textlog{None} * Q_1 \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * Q_1(v')}\\
+    \wand \quad (&\All v. (\All vs. P(vs) \vsW[\top \setminus \iota] Q * P(v :: vs)) \wand \wpre{f_2(v)}{v. Q}) \\
+    \wand \quad \phantom{(}& \Phi(f_1, f_2)
+  \end{align*}
+  as well as $P([])$. We then apply the application rule giving us
+  some $\ell$ so that $\ell \mapsto \textlog{None}$. We take this time
+  to establish the stack invariant for $r$, that is, for some $\iota$
+  that $\knowInv{\iota}{\textlog{stack\_inv}(r)}$. In order to do this
+  we must show that
+  \[
+    \later (\Exists \ell', v, L. \ell = \ell' * \ell' \mapsto v * P(L) * \textlog{is\_stack}(L, v))
+  \]
+  holds according to the invariant allocation rule.
+
+  We will prove this for $\ell$, $\textlog{None}$, and $[]$
+  respectively. We then merely must show that the following holds.
+  \[
+    P([]) * \textlog{is\_stack}([], \textlog{None})
+  \]
+  However the left-side of this conjunction is an assumption and the
+  right-hand side is simply true by reflexivity. We then, returning to
+  our main goal, need to show that
+  \[
+    \wpre{\text{\tt (..., ...)}}{\Phi}
+  \]
+  holds, and for this we apply our assumption. This leaves us with two
+  goals, showing that our specification holds for push and pop. We
+  will consider only the case for {\tt push} as an illustrative
+  example. That is, we want to show for an arbitrary that $v$
+  \begin{align*}
+    (\All L. &P(L) \vsW[\top \setminus \iota] P(v :: L) * Q) \wand\\
+    &\wpre{(\text{\tt (rec push n -> let r' = !r in let r'' = Some (n, r') in ...) v})}{Q}
+  \end{align*}
+  We now take a moment to use L\"ob induction so we may assume
+  \begin{align*}
+    \later (\All v, L. &P(L) \vsW[\top \setminus \iota] P(v :: L) * Q) \wand\\
+    &\wpre{(\text{\tt (rec push n -> let r' = !r in let r'' = Some (n, r') in ...) v})}{Q}
+  \end{align*}
+  Now, we can shift this to
+  \[
+    \wpre{\text{\tt !r}}{v'.
+      \wpre{(\text{\tt let r' = v' in let r'' = Some (v, r') in ...})}{Q}
+    }
+  \]
+  At this point we open the invariant
+  $\knowInv{\iota}{\textlog{stack\_inv}(r)}$. This gives us
+  that there is some $\ell$, $v''$ and $L$ so that
+  \[
+    \later (r = \ell * \ell \mapsto v'' * P(L) * \textlog{is\_stack}(L, v''))
+  \]
+  Using this, we can step our goal to
+  \[
+    \wpre{(\text{\tt let r' = v'' in let r'' = Some (v, r') in ...})}{Q}
+  \]
+  and reestablish our invariant trivially since we have not consumed
+  any resources. In this position we can step our goal to
+  \[
+    \wpre{(\text{\tt if cas r v'' (Some (v, v'')) then () else push v})}{Q}
+  \]
+  At this point we open up our invariant again, giving us
+  \[
+    \later (r = \ell * \ell \mapsto v''' * P(L) * \textlog{is\_stack}(L, v'''))
+  \]
+  for some $v'''$. We then case on whether or not $v'' = v'''$.
+
+  First consider the case that this does hold. In this case, we can
+  step our CAS successfully giving us the new assumption that
+  $\ell \mapsto \textlog{Some}(v, v'')$ and the obligation to
+  reestablish our invariant and show that $Q$ holds. For this we first
+  apply
+  \[
+    P(L) \vsW[\top \setminus \iota] P(v :: L) * Q
+  \]
+  to our assumption that $P(L)$ holds (we may strip of the later since
+  we have taken a step of computation). This gives us that
+  $\pvs[\top \setminus \iota] P(v :: L) * Q$ holds. We then have that
+  $\textlog{is\_stack}(v :: L, \textlog{Some}(v, v''))$ holds because
+  we have assumed that $\textlog{is\_stack}(L, v'')$ holds with
+  $v'' = v'''$. This, combined with our assumption that
+  $\ell \mapsto \textlog{Some}(v, v'')$ gives us that
+  $\pvs[\top \setminus \iota] \textlog{stack\_inv}(r)$ holds so we
+  may can reestablish our invariant with using $Q$ which we then use
+  to discharge the remaining postcondition.
+
+  If instead $v'' \neq v'''$ then we can reduce our goal to
+  \[
+    \wpre{(\text{\tt if false then () else push v})}{Q}
+  \]
+  and immediately reestablish our invariant because we have not
+  changed anything. But then stepping and applying our induction
+  hypothesis immediately gives us the desired conclusion.
+\end{proof}
+
+The Coq formalization of this specification and proof may be found in
+{\tt concurrent\_stack3.v}.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:

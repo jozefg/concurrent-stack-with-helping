@@ -1,0 +1,261 @@
+\section{A Third Formalization: View-Shifts with Helping}
+
+It is a straightforward exercise to adapt the previous proof to work
+with helping using the same setup as the previous proof. Indeed, since
+helping is an invisible optimization to a concurrent data structure
+the same specification ought to apply. The only question is how to
+modify the specifications we give to mailboxes in order to suitably
+handle these view-shifts.
+
+The primary difference is in the definition of the invariants for
+offers and mailboxes. Rather than having them pass around ownership of
+$P(v)$ for some $P$ where $v$ is the value they contain, they have to
+pass around the right to perform certain view-shifts. This
+unfortunately means that the proofs for mailboxes and offers become
+entangled with that of stacks to a much larger degree. This is why the
+Coq development does not isolate them into separate lemmas any
+more.
+
+The new invariant for offers is now defined using
+\[
+  \textlog{stages}_\gamma(\ell, v) \triangleq
+  (\ell \mapsto 0 * (\All vs. P(vs) \vsW P (v :: vs) * Q))
+  \mathrel{\vee} (\ell \mapsto 1 * Q)
+  \mathrel{\vee} (\ell \mapsto 1 * \ownGhost{\gamma}{\exinj(())})
+  \mathrel{\vee} (\ell \mapsto 2 * \ownGhost{\gamma}{\exinj(())})
+\]
+This means that either one of two interactions is possible
+\begin{enumerate}
+\item A thread without ownership of $\ownGhost{\gamma}{\exinj(())}$
+  attempts to switch from $\ell \mapsto 0$ to $\ell \mapsto 1$. In doing so,
+  it is obligated to take the view-shift
+  $\All vs. P(vs) \vsW (v :: vs) * Q)$ and place the resulting $Q$
+  back in the invariant.
+\item The thread which owns $\ownGhost{\gamma}{\exinj(())}$ may
+  attempt to revoke this offer, switching it from $\ell \mapsto 0$ to
+  $\ell \mapsto 2$. If it is successful then it can return the
+  view-shift transitioning $\All vs. P(vs) \vsW (v :: vs) * Q)$ or it
+  fails, implying that some thread has already successfully executed a
+  take. If the latter is the case, the thread can return the $Q$ that
+  must be stored in $\textlog{stages}$ which must be in the disjunct
+  $\ell \mapsto 1 * Q$.
+\end{enumerate}
+With this we can specify the invariant enforced on offers.
+\[
+  \textlog{is\_offer}_\gamma(\iota, v) \triangleq
+  \Exists v' l. v = (v', l) * \Exists \iota'. \iota \disjoint \iota' *
+  \knowInv{\iota'}{\textlog{stages}_\gamma(l)}
+\]
+The only difference worth noting is the inclusion of this
+$\iota' \disjoint \iota$. This is purely an artifact of the particular
+approach the proof of the specification has taken. At various points,
+it will be necessary to simultaneously open the invariant containing
+knowledge of the stack as well as the invariant containing what stage
+an offer is in. For instance, this is how {\tt take\_offer} will work
+so that it can actually apply the view-shift to the current state of
+the stack. Opening two invariants at the same time, however, is only
+possible if the invariants are in fact disjoint. All that this premise
+does is manually record the fact that this is the case. Later on the
+$\iota$ parameterizing $\textlog{is\_offer}$ will be the same as the
+$\iota$ governing the stack invariant.
+
+This change also propagates through the $\textlog{is\_mailbox}$
+invariant since this is after all where $\textlog{is\_offer}$
+occurs. Apart from this plumbing though the invariant is unchanged
+from the prior section.
+\[
+  \textlog{is\_mailbox}(\iota, v) \triangleq
+  \Exists \ell. v = \ell *
+  \ell \mapsto \textlog{None} \mathrel{\vee}
+  \Exists v' \gamma. l \mapsto \textlog{Some}(v') * \textlog{is\_offer}_\gamma(\iota, v')
+\]
+Rather than proceeding to formalize the specifications of mailboxes
+and offers, it is simpler to proceed directly to formalizing the
+stack data structure itself. The invariant governing a stack is
+unchanged from the previous section.
+\begin{align*}
+  \textlog{is\_stack}([], v) &\triangleq v = \textlog{None}\\
+  \textlog{is\_stack}(x :: L, v) &\triangleq v =
+  \Exists t. v = \textlog{Some}(x, t) * \textlog{is\_stack}(L, t)\\
+  \textlog{stack\_inv}(v) &\triangleq
+  \Exists \ell, v', L. v = \ell * \ell \mapsto v' * P(L) * \textlog{is\_stack}(L, v')
+\end{align*}
+The final specification is again unchanged. For brevity, the proof
+(which is largely a combination of the two previously explained ones)
+is only sketched.
+\begin{thm}
+  The following specification holds.
+  \begin{align*}
+    \forall \Phi.\qquad&\\
+    (\All f_1 f_2.& \\
+    (&(\All vs. P(v :: vs) \vsW Q_1(v) * P(vs)) \wand \\
+                       &(\All vs. P([]) \vsW Q_2 * P([])) \wand\\
+                       &\wpre{f_1()}{v. v = \textlog{None} * Q_1 \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * Q_1(v')}\\
+    \wand \quad (&\All v. (\All vs. P(vs) \vsW Q * P(v :: vs)) \wand \wpre{\text{\tt f2(v)}}{v. Q}) \\
+    \wand \quad \phantom{(}& \Phi(f_1, f_2))\\
+    \wand P([&]) \\
+    \wand \wpre{&\textlog{stack}()}{\Phi}
+  \end{align*}
+\end{thm}
+\begin{proof}
+  The beginning of the proof is a straightforward combination of the
+  previous two proofs, allocating an invariant for the mailbox and the
+  mutable cell containing the stack: $\knowInv{\iota}{\textlog{stack\_inv}(r)}$
+  and $\knowInv{\iota'}{\textlog{is\_mailbox}(r', \iota)}$. Notice that we pass
+  the $\iota$ from the stack invariant to the mailbox invariant as
+  discussed above.
+
+  Having done this, we apply the assumption that
+  \begin{align*}
+    \All f_1, f_2.&\\
+    (&(\All vs. P(v :: vs) \vsW Q_1(v) * P(vs)) \wand \\
+     &(\All vs. P([]) \vsW Q_2 * P([])) \wand\\
+     &\wpre{f_1()}{v. v = \textlog{None} * Q_1 \mathrel{\vee} \Exists v'. v = \textlog{Some}(v') * Q_1(v')})\\
+    \wand \quad (&\All v. (\All vs. P(vs) \vsW Q * P(v :: vs)) \wand \wpre{f_2(v)}{v. Q})\\
+    \wand \quad \phantom{(}& \Phi(f_1, f_2)
+  \end{align*}
+  This leaves us with two separate verifications for push and
+  pop. These are largely the same as the previous proof. The only
+  difference is each proof is proceeded by manual manipulations of
+  the mailboxes and offers which in turn are simply inlined versions
+  of the proof from the prior sections.
+
+  We will consider the case for {\tt push}. The goal we must prove is
+  then
+  \[
+    \All v. (\All vs. P(vs) \vsW Q * P(v :: vs))
+    \wand \wpre{\text{\tt push(v)}}{v. Q}
+  \]
+  Therefore, let us suppose that $\All vs. P(vs) \vsW Q * P(v :: vs)$
+  and that we have some value $v$. It as at this point that we apply
+  L\"ob induction to add an induction hypothesis of
+  $\later \wpre{\text{\tt push(v)}}{v. Q}$ to our context. We then
+  simplify our goal using $\beta$ and bind to
+  \[
+    \wpre{\text{\tt put v}}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  Since we have no specification yet formalized for {\tt push}, we
+  proceed to unfold it and begin to work with the internal
+  implementation of {\tt put}.
+  \[
+    \wpre{\text{\tt let off = mk\_offer v in ...}}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  We can simplify this again and apply bind
+  \[
+    \wpre{\text{\tt (v, ref 0)}}
+    {v'. \wpre{\text{\tt let off = v' in ...}}{v'. \wpre{\text{\tt match v' with ...}}{Q}}}
+  \]
+  We can then apply the rule for allocation, so suppose that we have
+  some $\ell$ and $\ell \mapsto 0$. We then must show that
+  \[
+    \wpre{\text{\tt r' := Some (v, l); revoke\_offer (v, l)}}
+    {v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  We may then open the invariant
+  $\knowInv{\iota'}{\textlog{is\_mailbox}(r', \iota)}$ and apply the
+  replace the previous value stored in $r'$ with {\tt (v, l)} and
+  reestablish the invariant
+  $\knowInv{\iota'}{\textlog{is\_mailbox}(r', \iota)}$. In order to do
+  this, we must use $\All vs. P(vs) \vsW Q * P(v :: vs)$ and allocate
+  a new invariant $\knowInv{\iota''}{\textlog{stages}_\gamma(l)}$ for
+  some $\gamma$ so that we also have $\ownGhost{\gamma}{\exinj(())}$.
+  Thus, our goal is now
+  \[
+    \wpre{\text{\tt revoke\_offer (v, l)}}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  If we apply $\beta$ rules we then end up with
+  \[
+    \wpre{(\text{\tt if cas l 0 2 then Some(v) else None})}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  Let us then open up the invariant
+  $\knowInv{\iota''}{\textlog{stages}(l)}$. This tells us that there
+  \[
+    (\ell \mapsto 0 * (\All vs. P(vs) \vsW P (v :: vs) * Q))
+    \mathrel{\vee} (\ell \mapsto 1 * Q)
+    \mathrel{\vee} \ell \mapsto 1 * \ownGhost{\gamma}{\exinj(())}
+    \mathrel{\vee} (\ell \mapsto 2 * \ownGhost{\gamma}{\exinj(())})
+  \]
+  Let us perform case analysis on these three possible results. We can
+  immediately dismiss the last two cases since we have assumed to own
+  $\ownGhost{\gamma}{\exinj(())}$ which means that the
+  $\ownGhost{\gamma}{\exinj(())}$ coming from this invariant would
+  produce a contradiction.
+
+  In the second case, the CAS fails so we are left with $\ell \mapsto
+  1$, $\ownGhost{\gamma}{\exinj(())}$, and $Q$. Let us reestablish our
+  invariant using the $\ell \mapsto 1$ and
+  $\ownGhost{\gamma}{\exinj(())}$ using the second branch. Our goal is then
+  \[
+    \wpre{(\text{\tt None})}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  and simplifying this gives us the obligation
+  \[
+    \wpre{\text{\tt None}}{Q}
+  \]
+  but this is trivial to discharge using our assumption of $Q$ that we
+  got from the invariant. This case is essentially the position we
+  would be in if the side-channel is accepted.
+
+
+  In the first case, therefore, we must consider what happens if the
+  side-channel is not used. Clearly the CAS is successful
+  and we can reestablish this invariant by providing
+  $\ownGhost{\gamma}{\exinj(())}$ and choosing the last disjunct. In
+  this case, we have the assumption $\All vs. P(vs) \vsW P (v :: vs) * Q$
+  and the goal
+  \[
+    \wpre{(\text{\tt Some(v)})}{v'. \wpre{\text{\tt match v' with ...}}{Q}}
+  \]
+  Therefore, we can apply $\beta$ rules to reduce this to
+  \[
+    \wpre{\text{\tt let x = !r in let y = Some (v, x) in ...}}{Q}
+  \]
+  In order to reduce this, we must open the invariant
+  $\knowInv{\iota}{\textlog{stack\_inv}(r)}$ which tells us, amongst
+  other things, that $r = \ell'$ for some $\ell'$ and that $\ell'
+  \mapsto s$ for some value $s$. We can then step our program and
+  reestablish the invariant (stepping does not effect the context at
+  all) to
+  \[
+    \wpre{\text{\tt let x = s in let y = Some (v, x) in ...}}{Q}
+  \]
+  We can now repeatedly simplify our goal to
+  \[
+    \wpre{\text{\tt if cas r s (Some (v, s)) then () else push v}}{Q}
+  \]
+  In order to simplify this, we must once again open up the invariant
+  $\knowInv{\iota}{\textlog{stack\_inv}(r)}$. This tells us that for
+  some $s'$, $L$ and $\ell'$ that
+  \[
+    r = \ell' * \ell' \mapsto s' * P(L) * \textlog{is\_stack}(L, s')
+  \]
+  holds. Let us then case on whether or not $s' = s$.
+
+  If it does, then the CAS succeeds, therefore we have
+  $\ell' \mapsto \textlog{Some}(v, s)$. Simple logic gives us that
+  $\textlog{is\_stack}(L, s')$ implies that
+  $\textlog{is\_stack}(v :: L, \textlog{Some}(v, s))$
+  holds. In order to reestablish our invariant we must show that $\vs
+  \textlog{stack\_inv}(r)$ holds. However, since we have the
+  implication $P(L) \vsW P(v :: L)$ it is sufficient to show that
+  \[
+    r = \ell' * \ell' \mapsto \textlog{Some}(v, s) * P(L)
+    * \textlog{is\_stack}(v :: L, \textlog{Some}(v, s))
+  \]
+  however we have precisely these assumptions so we're done. This
+  leaves us with the goal $\wpre{()}{Q}$ which is discharged
+  immediately with our assumption of $Q$.
+
+
+  If these are not equal, then the CAS fails so it's trivial to
+  reestablish the invariant. Our goal is then $\wpre{\text{\tt push v}}{Q}$
+  but for this we just apply our IH and we're done.
+\end{proof}
+
+The Coq formalization of this specification and proof may be found in
+{\tt concurrent\_stack4.v}.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:

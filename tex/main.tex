@@ -1,0 +1,65 @@
+\documentclass[12pt]{amsart}
+\usepackage{iris}
+\usepackage{tikz}
+\usetikzlibrary{arrows}
+\usepackage{chngcntr}
+\usepackage{fullpage}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[foot]{amsaddr}
+\usepackage{listings, xcolor}
+\usepackage[T1]{fontenc}
+\usepackage{natbib}
+
+\counterwithout{figure}{section}
+
+\lstset{
+    language=Caml,
+    basicstyle=\ttfamily,
+    keywordstyle=\color{blue}\ttfamily,
+    stringstyle=\color{red}\ttfamily,
+    commentstyle=\color{darkgreen}\ttfamily,
+    breaklines=true,
+    columns=flexible,
+    literate={->}{$\to$\ }1,
+    xleftmargin=\leftmargini,
+  }
+
+\newtheorem{thm}{Theorem}[section]
+\newtheorem{cor}[thm]{Corollary}
+\newtheorem{lem}[thm]{Lemma}
+\newtheorem{remark}[thm]{Remark}
+\newtheorem{defn}[thm]{Definition}
+
+\newcommand{\disjoint}{\mathrel{\bot}}
+
+\title{Formalizing Concurrent Stacks with Helping: \\
+  A Case Study in Iris}
+\author{Daniel Gratzer}
+\address{Carnegie Mellon University}
+\author{Mathias H{\o}ier \and Ale{\u s} Bizjak \and Lars Birkedal}
+\address{Aarhus University}
+\date{\today}
+
+\begin{document}
+\begin{abstract}
+  Iris is an expressive higher-order separation logic designed for the
+  verification of concurrent, imperative programs. As a demonstration
+  of this, we present a formalization of a common concurrent
+  data-structure: a stack. The implementation is lock-free and uses
+  helping to avoid contention. All of the examples are formalized in
+  Coq and demonstrate how Iris can be used to give expressive,
+  higher-order specifications of advanced concurrent data-structures.
+\end{abstract}
+\maketitle
+
+\input{intro}
+\input{code}
+\input{bag}
+\input{viewshift-without-helping}
+\input{viewshift-with-helping}
+\input{conclusion}
+
+\bibliographystyle{plainnat}
+\nocite{*}
+\bibliography{iris}{}
+\end{document}

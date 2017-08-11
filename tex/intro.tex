@@ -1,0 +1,45 @@
+\section{Introduction}
+
+Iris is a general, base logic suitable for constructing a variety of
+program logics. It has been used extensively to verify properties of
+various programs, in particular those making use of fine-grained
+concurrency. In this case study we will verify a larger example of
+such a concurrent program which uses atomic operations to implement a
+lock-free data-structure.
+
+Despite how it is normally used, the Iris logic itself is designed
+quite independently of any particular programming language or indeed
+the notion of a program logic at all. It is a standard higher-order
+logic supplemented with several modalities. An introduction to it may
+be found in~\citet{Jung:2017} or~\citet{Jung:2015}. In this paper we
+will assume familiarity with Iris as well as one of the main languages
+it has been used to study: a concurrent ML supplemented with general,
+mutable reference and a CAS operation. We will focus on showing how to
+use the logic provided by Iris to examine a real, substantive
+concurrent data-structure: a concurrent stack with helping. We hope
+that this case study will give a flavor for how verification of such
+data-structures normally proceeds in Iris. In order to do this we will
+give several different specifications for the stack. Each
+specification will be more precise and correspondingly complex than
+the previous one. Inevitably, the specifications will force us to
+choose between the modularity of the proof and the precision with
+which our specification describes the data-structure. The first
+specification, which ignores the stack ordering of the data-structure
+and merely treats it as a bag, allows for a simple and direct
+verification that follows the abstractions set up in the code
+itself. The final specification which captures far more of the
+behavior of the stack forces us to ignore such abstractions.
+
+To begin with, we will start by reviewing the code and informally
+arguing towards its correctness. We will then specify it as a bag and
+provide a fully worked out proof that the code satisfies the
+specification. We will then prove a more precise specification making
+use of atomic updates to an abstract stack for our data structure with
+and without helping. Finally, we will conclude with the same precise
+specification applied to the full data-structure supplemented with
+helping.
+
+%%% Local Variables:
+%%% mode: latex
+%%% TeX-master: "main"
+%%% End:
